@@ -1,20 +1,19 @@
 #include <bits/stdc++.h>
 #include <cuda.h>
 #include "cuda_runtime.h"
+#define SELECT_BLOCK_SIZE(n) ((n) > 50000000 ? 512 : 256)
 //1.121888 ms
-//tips: L68和L75为遇见的两个bug，说明了在遍历的时候需要精确传入数据量，多了或少了都可能会出现垃圾值或者cuda干脆对这种情况不处理
+
 template <int blockSize>
 __global__ void histgram(int *hist_data, int *bin_data, int N)
 {
     __shared__ int cache[256];
     int gtid = blockIdx.x * blockSize + threadIdx.x; // 泛指当前线程在所有block范围内的全局id
     int tid = threadIdx.x; // 泛指当前线程在其block内的id
-    
     cache[tid] = 0;
     __syncthreads();
-    
-    // 优化：真正利用循环，每个线程处理多个元素
-    // 步长 = 总线程数，让每个线程处理多个元素
+
+    // for循环来自动确定每个线程处理的元素个数
     for (int i = gtid; i < N; i += gridDim.x * blockSize)
     {
         int val = hist_data[i];// 每个单线程计算全局内存中的若干个值
@@ -59,12 +58,15 @@ int main(){
     cudaSetDevice(0);
     cudaDeviceProp deviceProp;
     cudaGetDeviceProperties(&deviceProp, 0);
-    const int blockSize = 256;
+    //动态定义blockSize大小
+    const int blockSize = SELECT_BLOCK_SIZE(N);
     //当有shared mem操作时， N / (GridSize × blockSize) < 2时，代表每个线程只处理一个元素，
-    //此时block数量过多，gpu调度开销大，gpu调度为主要瓶颈，建议减少blocksize
-    const int elements_per_thread = 4;  // 每个线程处理4个元素
+    //此时block数量过多，gpu调度开销大，gpu调度为主要瓶颈，建议减少block数量
+    //以1000万数据量为界，根据数据量动态调整每个线程要处理的元素个数（1~8）
+    int elements_per_thread = min(8, max(1, (int)(N / 10000000.0)));
     int GridSize = std::min((N + blockSize * elements_per_thread - 1) / (blockSize * elements_per_thread), 
                             deviceProp.maxGridSize[0]);
+    printf("elements_per_thread=%d, GridSize=%d, blockSize=%d\n", elements_per_thread, GridSize, blockSize);
     dim3 Grid(GridSize);
     dim3 Block(blockSize);
     
